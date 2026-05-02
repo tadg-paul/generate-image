@@ -28,7 +28,7 @@ type apiKeyConfig struct {
 type config struct {
 	Model          string                  `yaml:"model"`
 	APIKeys        map[string]apiKeyConfig `yaml:"api-keys"`
-	PreviewCommand string                  `yaml:"preview_command"`
+	PreviewCommand string                  `yaml:"preview-command"`
 }
 
 type falResponse struct {

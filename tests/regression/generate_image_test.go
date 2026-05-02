@@ -966,8 +966,8 @@ func TestCLI_dry_run_no_output_file_RT1_27(t *testing.T) {
 	}
 }
 
-// RT-1.28: --preview opens the image with the configured preview_command.
-// User action: runs with --preview flag and preview_command set in config.
+// RT-1.28: --preview opens the image with the configured preview-command.
+// User action: runs with --preview flag and preview-command set in config.
 // User observes: image generated, then opened with the configured command.
 func TestCLI_preview_opens_image_RT1_28(t *testing.T) {
 	bin := buildBinary(t)
@@ -975,7 +975,7 @@ func TestCLI_preview_opens_image_RT1_28(t *testing.T) {
 	// Use a preview command that writes a marker file to prove it ran.
 	markerFile := filepath.Join(t.TempDir(), "preview-ran")
 	previewCmd := fmt.Sprintf("touch %s", markerFile)
-	configYAML := fmt.Sprintf("model: fal-ai/grok-2-aurora\npreview_command: \"%s\"\n", previewCmd)
+	configYAML := fmt.Sprintf("model: fal-ai/grok-2-aurora\npreview-command: \"%s\"\n", previewCmd)
 	binPath := setupEnv(t, bin, "test-key", configYAML)
 
 	imageServer := newImageServer(t, fakeImagePNG, "image/png")
@@ -992,15 +992,15 @@ func TestCLI_preview_opens_image_RT1_28(t *testing.T) {
 	}
 }
 
-// RT-1.29: --preview without preview_command uses platform default.
-// User action: runs with --preview flag but no preview_command in config.
+// RT-1.29: --preview without preview-command uses platform default.
+// User action: runs with --preview flag but no preview-command in config.
 // User observes: image generated, platform default viewer invoked (which may
 // fail in test env, but the binary should attempt it rather than error about config).
 func TestCLI_preview_without_config_uses_default_RT1_29(t *testing.T) {
 	bin := buildBinary(t)
 
-	// Use a config with preview_command that writes a marker to prove default is overridden.
-	// Then test WITHOUT preview_command -- the binary should not error about missing config.
+	// Use a config with preview-command that writes a marker to prove default is overridden.
+	// Then test WITHOUT preview-command -- the binary should not error about missing config.
 	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
 
 	imageServer := newImageServer(t, fakeImagePNG, "image/png")
@@ -1011,10 +1011,10 @@ func TestCLI_preview_without_config_uses_default_RT1_29(t *testing.T) {
 
 	// The default preview command (open/xdg-open) may fail in a headless test env,
 	// but the error should be about the preview command failing, NOT about
-	// missing preview_command configuration.
+	// missing preview-command configuration.
 	if exitCode != 0 {
 		lower := strings.ToLower(stderr)
-		if strings.Contains(lower, "requires preview_command") {
+		if strings.Contains(lower, "requires preview-command") {
 			t.Errorf("Should use platform default, not require config; got: %q", stderr)
 		}
 	}

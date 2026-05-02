@@ -153,10 +153,19 @@ func run() int {
 		return 1
 	}
 
-	// Dry-run: print what would happen and exit.
+	// Dry-run: show what would be sent and exit.
 	if dryRun {
-		fmt.Fprintf(os.Stderr, "Model: %s\n", cfg.Model)
-		fmt.Fprintf(os.Stderr, "Prompt: %s\n", prompt)
+		baseURL := os.Getenv("FAL_BASE_URL")
+		if baseURL == "" {
+			baseURL = "https://fal.run"
+		}
+		url := fmt.Sprintf("%s/%s", baseURL, cfg.Model)
+
+		payload := map[string]string{"prompt": prompt}
+		pretty, _ := json.MarshalIndent(payload, "", "  ")
+
+		fmt.Fprintf(os.Stderr, "POST %s\n", url)
+		fmt.Fprintf(os.Stderr, "%s\n", pretty)
 		fmt.Fprintf(os.Stderr, "Output: %s\n", outputPath)
 		fmt.Fprintln(os.Stderr, "(dry run -- no API call made)")
 		return 0

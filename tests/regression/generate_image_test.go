@@ -938,12 +938,14 @@ func TestCLI_dry_run_prints_summary_RT1_26(t *testing.T) {
 	if apiCalled {
 		t.Errorf("API should not be called during --dry-run")
 	}
-	lower := strings.ToLower(stderr)
-	if !strings.Contains(lower, "model") {
-		t.Errorf("Expected --dry-run to mention model, got: %q", stderr)
+	if !strings.Contains(stderr, "POST") {
+		t.Errorf("Expected --dry-run to show POST request, got: %q", stderr)
 	}
-	if !strings.Contains(lower, "a red cat") {
-		t.Errorf("Expected --dry-run to show prompt, got: %q", stderr)
+	if !strings.Contains(stderr, "grok-2-aurora") {
+		t.Errorf("Expected --dry-run to show model in URL, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "a red cat") {
+		t.Errorf("Expected --dry-run to show prompt in payload, got: %q", stderr)
 	}
 }
 

@@ -517,5 +517,5 @@ func reportCost(client *http.Client, baseURL, model, falKey string) {
 	}
 
 	price := pricing.Prices[0]
-	fmt.Fprintf(os.Stderr, "Cost: $%.2f (per %s)\n", price.UnitPrice, price.Unit)
+	fmt.Fprintf(os.Stderr, "Cost: $%.2f (unit: %s) for model %s (source: FAL API)\n", price.UnitPrice, price.Unit, model)
 }

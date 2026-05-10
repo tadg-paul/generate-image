@@ -1904,3 +1904,22 @@ func TestGenImg_dry_run_no_base64_RT4_14(t *testing.T) {
 		t.Errorf("Dry-run should not include base64 data, got: %q", stderr)
 	}
 }
+
+// RT-4.15: 'generate-image' (full name) is an alias for 'gen-img'.
+func TestGenImg_full_name_alias_RT4_15(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPI(t, successHandler(t, imageServer, nil), nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"generate-image", outFile}, "a cat", []string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode != 0 {
+		t.Errorf("Expected exit 0 for 'generate-image' alias, got %d; stderr: %s", exitCode, stderr)
+	}
+	if _, err := os.Stat(outFile); err != nil {
+		t.Errorf("Expected output file from 'generate-image' alias, got: %v", err)
+	}
+}

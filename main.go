@@ -22,6 +22,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Subcommands:")
 	fmt.Fprintln(os.Stderr, "  gen-img   Generate an image from a text prompt (stdin)")
+	fmt.Fprintln(os.Stderr, "            (alias for the full name 'generate-image')")
 	fmt.Fprintln(os.Stderr, "  cost      Query pricing for the configured model")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Global flags (placed before the subcommand):")
@@ -100,7 +101,7 @@ func run() int {
 	subcommandArgs := args[subcommandIdx+1:]
 
 	switch subcommand {
-	case "gen-img":
+	case "gen-img", "generate-image":
 		return runGenImg(subcommandArgs, quiet)
 	case "cost":
 		return runCost(subcommandArgs, quiet)

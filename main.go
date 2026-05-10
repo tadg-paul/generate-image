@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type apiKeyConfig struct {
 	Command string `yaml:"command"`
@@ -172,7 +172,12 @@ func run() int {
 		url := fmt.Sprintf("%s/%s", baseURL, cfg.Model)
 
 		payload := map[string]string{"prompt": prompt}
-		pretty, _ := json.MarshalIndent(payload, "", "  ")
+		pretty, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			// Unreachable: payload is a map[string]string with no unencodable types.
+			fmt.Fprintf(os.Stderr, "Error: failed to marshal dry-run payload: %v\n", err)
+			return 1
+		}
 
 		fmt.Fprintf(os.Stderr, "POST %s\n", url)
 		fmt.Fprintf(os.Stderr, "%s\n", pretty)
@@ -495,11 +500,6 @@ func loadFALKey(path string) (string, error) {
 	return "", fmt.Errorf("FAL_KEY not found in %s", path)
 }
 
-// writeImage writes image data to disk, handling extension logic:
-// - No extension: appends the API format extension
-// - Matching extension: writes as-is
-// - Mismatched extension: converts via ImageMagick or returns an error
-// Returns the final output path (which may differ from the input).
 // writeResult holds the outcome of writeImage for status reporting.
 type writeResult struct {
 	Path      string
@@ -508,6 +508,12 @@ type writeResult struct {
 	ToFmt     string
 }
 
+// writeImage writes image data to disk, handling extension logic:
+//   - No extension: appends the API format extension
+//   - Matching extension: writes as-is
+//   - Mismatched extension: converts via ImageMagick or returns an error
+//
+// Returns the final output path (which may differ from the input).
 func writeImage(imageData []byte, contentType string, outputPath string) (*writeResult, error) {
 	apiExt := extFromContentType(contentType)
 	userExt := filepath.Ext(outputPath)
@@ -582,7 +588,9 @@ func convertWithMagick(imageData []byte, srcExt string, outputPath string) error
 		tmpFile.Close()
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
 
 	// Convert with magick.
 	cmd := exec.Command(magickPath, tmpPath, outputPath)

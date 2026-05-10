@@ -231,11 +231,13 @@ func runGenImg(args []string, globalQuiet bool) int {
 }
 
 // readPrompt reads a prompt from stdin. If stdin is a TTY (interactive),
-// it reads a single line. If stdin is piped, it reads all input.
+// it prompts the user and reads a single line. If stdin is piped, it reads all input.
 func readPrompt() (string, error) {
 	stat, err := os.Stdin.Stat()
 	if err == nil && (stat.Mode()&os.ModeCharDevice) != 0 {
-		// TTY: read one line.
+		// TTY: prompt the user, then read one line.
+		fmt.Fprintln(os.Stderr, "Interactive terminal detected. Type your prompt and press Enter:")
+		fmt.Fprint(os.Stderr, "> ")
 		reader := bufio.NewReader(os.Stdin)
 		line, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {

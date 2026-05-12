@@ -98,6 +98,8 @@ Run `pix <subcommand> --help` for subcommand-specific usage.
 | `-p`, `--preview` | generate | Open the image after generation |
 | `--load-prompt` | generate | Pick a saved prompt via fzf (or configured picker) |
 | `--no-load-prompt` | generate | Disable load-prompt mode (overrides `load-prompt.always`) |
+| `--pick-model` | generate | Pick a FAL model from the live catalogue via the picker |
+| `--no-pick-model` | generate | Disable model-picker mode (overrides `model-picker.always`) |
 
 `--help` is mutually exclusive with all other flags and arguments.
 
@@ -120,11 +122,17 @@ api-keys:
 # Custom preview command (optional -- defaults to open/xdg-open/start)
 # preview-command: chafa
 
+# Picker -- shared by --load-prompt and --pick-model (default: fzf)
+# picker: fzf
+
 # Saved prompts (optional -- only required when --load-prompt is used)
 # load-prompt:
 #   path: ~/.config/pix/prompts    # directory of saved prompt files
-#   picker: fzf                    # default: fzf -- any selector that reads candidates from stdin and writes a selection to stdout
-#   always: false                  # if true, --load-prompt is implicit on every generate/edit invocation
+#   always: false                  # if true, --load-prompt is implicit on every generate invocation
+
+# Model picker (optional -- enable always-on selection from the FAL catalogue)
+# model-picker:
+#   always: false                  # if true, --pick-model is implicit on every generate invocation
 ```
 
 ### Saved prompts
@@ -136,6 +144,17 @@ api-keys:
 3. Reads one line from stdin -- Enter sends as-is, any text becomes a suffix joined by a blank line.
 
 Cancelling the picker exits 0 without contacting FAL. When stdin is piped with content, pix uses the piped content as the prompt directly and skips the picker -- so `echo "..." | pix gen out.png` works whether or not `--load-prompt` is in play. Set `load-prompt.always: true` to make the flow implicit, with `--no-load-prompt` available per invocation when you want to type a prompt directly.
+
+### Model picker
+
+`--pick-model` fetches FAL's live `/v1/models` catalogue and presents it via the same picker as `--load-prompt`. The category filter adapts to your invocation:
+
+- No reference images on the command line -> `category=text-to-image`.
+- One or more reference images -> `category=image-to-image`.
+
+The selected `endpoint_id` is used as the FAL model for this invocation only; `config.yaml` is not modified. Set `model-picker.always: true` to make the flow implicit on every `pix gen`, with `--no-pick-model` to opt out per invocation.
+
+No caching for now -- every invocation hits FAL `/v1/models`. The fetch is fast (one round-trip, ~30s timeout).
 
 ### API key resolution priority
 

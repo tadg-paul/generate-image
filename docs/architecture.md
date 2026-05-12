@@ -32,6 +32,7 @@ All code lives in package `main` at the project root.
 | `config.go` | `config.yaml` loading, API key resolution, config directory resolution |
 | `fal.go` | FAL API HTTP helpers (generation, pricing, historical estimate) |
 | `prompts.go` | `--load-prompt` flow -- enumerates saved-prompt files, invokes the configured picker, assembles base + optional appended text |
+| `models.go` | `--pick-model` flow -- fetches FAL `/v1/models` (image categories), invokes the configured picker, returns the selected `endpoint_id` |
 
 ### Subcommands
 
@@ -69,6 +70,7 @@ The tool calls three FAL endpoints:
 | `https://fal.run/{model}` | POST | Image generation (`generate`) |
 | `https://api.fal.ai/v1/models/pricing?endpoint_id={model}` | GET | Unit price lookup (`cost`, post-generation cost) |
 | `https://api.fal.ai/v1/models/pricing/estimate` | POST | Historical cost estimate (`cost`) |
+| `https://api.fal.ai/v1/models?category={cat}&status=active` | GET | Model catalogue for `--pick-model`; `cat` is `text-to-image` (no refs) or `image-to-image` (refs present) |
 
 All use `Authorization: Key {fal_key}` headers. The `FAL_BASE_URL` environment variable redirects all endpoints to a test server via `httptest.NewServer`.
 

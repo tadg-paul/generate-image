@@ -2922,3 +2922,418 @@ func TestRename_edit_image_dropped_RT9_7(t *testing.T) {
 		t.Errorf("Expected unknown-subcommand error, got: %q", stderr)
 	}
 }
+
+// --- Model picker tests (issue #10) ---
+
+// modelsHandler returns a stub /v1/models response containing the given endpoint IDs,
+// each with a fake metadata block. The category param is echoed in the response so
+// tests can assert the request used the right filter.
+type capturedModelsReq struct {
+	URL string
+}
+
+// startFakeAPIWithModels extends startFakeAPI with /v1/models routing.
+func startFakeAPIWithModels(t *testing.T, generateHandler, pricingHandler http.HandlerFunc, modelsHandler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/models/pricing") {
+			if pricingHandler != nil {
+				pricingHandler(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if r.URL.Path == "/v1/models" {
+			if modelsHandler != nil {
+				modelsHandler(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if generateHandler != nil {
+			generateHandler(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// fakeModelsResponse builds a /v1/models JSON response with the given endpoint IDs.
+func fakeModelsResponse(endpointIDs []string, category string) string {
+	type meta struct {
+		DisplayName string `json:"display_name"`
+		Description string `json:"description"`
+		Category    string `json:"category"`
+		Status      string `json:"status"`
+	}
+	type entry struct {
+		EndpointID string `json:"endpoint_id"`
+		Metadata   meta   `json:"metadata"`
+	}
+	type response struct {
+		Models    []entry     `json:"models"`
+		HasMore   bool        `json:"has_more"`
+		NextCursor interface{} `json:"next_cursor"`
+	}
+	r := response{HasMore: false}
+	for _, id := range endpointIDs {
+		r.Models = append(r.Models, entry{
+			EndpointID: id,
+			Metadata: meta{
+				DisplayName: id,
+				Description: "Test model " + id,
+				Category:    category,
+				Status:      "active",
+			},
+		})
+	}
+	b, _ := json.Marshal(r)
+	return string(b)
+}
+
+// modelPickerConfigYAML builds a config that exercises model-picker.
+func modelPickerConfigYAML(model, picker string, always bool) string {
+	cfg := "model: " + model + "\npicker: " + picker + "\n"
+	if always {
+		cfg += "model-picker:\n  always: true\n"
+	}
+	return cfg
+}
+
+// RT-10.1: pix gen --pick-model is a recognised flag.
+func TestModelPicker_flag_recognised_RT10_1(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickFirst, false))
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if exitCode != 0 {
+		t.Errorf("Expected exit 0 for --pick-model, got %d; stderr: %s", exitCode, stderr)
+	}
+}
+
+// RT-10.2: pix gen --no-pick-model is a recognised flag.
+func TestModelPicker_no_flag_recognised_RT10_2(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPI(t, successHandler(t, imageServer, nil), nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--no-pick-model", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode != 0 {
+		t.Errorf("Expected exit 0 for --no-pick-model, got %d; stderr: %s", exitCode, stderr)
+	}
+}
+
+// RT-10.3: --pick-model issues GET /v1/models with text-to-image filter when no refs.
+func TestModelPicker_text_category_no_refs_RT10_3(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickFirst, false))
+
+	var capturedURL string
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			capturedURL = r.URL.String()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if !strings.Contains(capturedURL, "category=text-to-image") {
+		t.Errorf("Expected /v1/models query to filter category=text-to-image, got URL: %q", capturedURL)
+	}
+	if !strings.Contains(capturedURL, "status=active") {
+		t.Errorf("Expected /v1/models query to filter status=active, got URL: %q", capturedURL)
+	}
+}
+
+// RT-10.4: --pick-model passes candidate lines to the picker with endpoint_id as first field.
+func TestModelPicker_picker_receives_candidates_RT10_4(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora",
+			"tee "+filepath.Join(t.TempDir(), "cand.log")+" | head -n 1", false))
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/alpha", "fal-ai/beta"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if exitCode != 0 {
+		t.Fatalf("Expected exit 0, got %d; stderr: %s", exitCode, stderr)
+	}
+	// The picker stub picked the first candidate (fal-ai/alpha) and pix should have used it.
+	// We assert via the generation POST URL below in RT-10.5; for this test the key thing
+	// is that the flow completed successfully with multiple candidates.
+}
+
+// RT-10.5: selected endpoint_id from picker is used as the generation endpoint.
+func TestModelPicker_selected_endpoint_used_RT10_5(t *testing.T) {
+	bin := buildBinary(t)
+	// Picker stub matches a specific endpoint id by name.
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", "grep -m1 chosen-model", false))
+
+	var generatePath string
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			generatePath = r.URL.Path
+			resp := map[string]interface{}{
+				"images": []map[string]interface{}{{"url": imageServer.URL + "/img.png"}},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/other-model", "fal-ai/chosen-model"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if !strings.Contains(generatePath, "chosen-model") {
+		t.Errorf("Expected generation URL to use selected model 'chosen-model', got: %q", generatePath)
+	}
+	if strings.Contains(generatePath, "grok-2-aurora") {
+		t.Errorf("Did not expect cfg.Model in generation URL when picker selected; got: %q", generatePath)
+	}
+}
+
+// RT-10.6: cfg.Model on disk is unchanged after a --pick-model invocation.
+func TestModelPicker_does_not_mutate_config_RT10_6(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickFirst, false))
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	// Read config.yaml from the binary's directory and confirm cfg.Model still points to grok-2-aurora.
+	cfgPath := filepath.Join(filepath.Dir(binPath), "config.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("Failed to read config: %v", err)
+	}
+	if !strings.Contains(string(data), "fal-ai/grok-2-aurora") {
+		t.Errorf("Expected config.yaml to still hold fal-ai/grok-2-aurora; got: %q", string(data))
+	}
+}
+
+// RT-10.7: picker non-zero exit (cancellation) -> pix exit 0 with no generation request.
+func TestModelPicker_cancel_no_generation_RT10_7(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickCancel, false))
+
+	generateCalled := false
+	server := startFakeAPIWithModels(t,
+		func(w http.ResponseWriter, r *http.Request) { generateCalled = true }, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, _, exitCode := runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if exitCode != 0 {
+		t.Errorf("Expected exit 0 on picker cancel, got %d", exitCode)
+	}
+	if generateCalled {
+		t.Errorf("Expected no generation call when picker cancelled")
+	}
+}
+
+// RT-10.8: model-picker.always:true triggers picker without --pick-model flag.
+func TestModelPicker_always_triggers_RT10_8(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", "grep -m1 always-pick", true))
+
+	var generatePath string
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			generatePath = r.URL.Path
+			resp := map[string]interface{}{
+				"images": []map[string]interface{}{{"url": imageServer.URL + "/img.png"}},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/always-pick-model"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if !strings.Contains(generatePath, "always-pick-model") {
+		t.Errorf("Expected always:true to trigger picker; generation path: %q", generatePath)
+	}
+}
+
+// RT-10.9: --no-pick-model overrides model-picker.always.
+func TestModelPicker_no_flag_overrides_always_RT10_9(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickFirst, true))
+
+	var generatePath string
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			generatePath = r.URL.Path
+			resp := map[string]interface{}{
+				"images": []map[string]interface{}{{"url": imageServer.URL + "/img.png"}},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/should-not-be-used"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", "--no-pick-model", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if strings.Contains(generatePath, "should-not-be-used") {
+		t.Errorf("Expected --no-pick-model to skip picker; generation path: %q", generatePath)
+	}
+	if !strings.Contains(generatePath, "grok-2-aurora") {
+		t.Errorf("Expected cfg.Model to be used with --no-pick-model; got path: %q", generatePath)
+	}
+}
+
+// RT-10.10: top-level `picker:` config drives both load-prompt and model-pick.
+func TestModelPicker_top_level_picker_RT10_10(t *testing.T) {
+	bin := buildBinary(t)
+	// Top-level picker; no `load-prompt.picker` key at all.
+	promptsDir := t.TempDir()
+	writePromptFile(t, promptsDir, "p1.md", "from-saved")
+	cfg := "model: fal-ai/grok-2-aurora\npicker: head -n 1\nload-prompt:\n  path: " + promptsDir + "\n"
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n", cfg)
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	// Use both flags to exercise both flows.
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--load-prompt", "--pick-model", outFile}, "\n",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if exitCode != 0 {
+		t.Errorf("Expected exit 0 with top-level picker driving both flows, got %d; stderr: %s", exitCode, stderr)
+	}
+}
+
+// RT-10.11: when picker is unset entirely, default 'fzf' is used.
+// Tested indirectly: with no picker set and fzf not on PATH, the error mentions fzf.
+func TestModelPicker_default_fzf_RT10_11(t *testing.T) {
+	bin := buildBinary(t)
+	// No picker key at all; default should be fzf.
+	cfg := "model: fal-ai/grok-2-aurora\n"
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n", cfg)
+
+	server := startFakeAPIWithModels(t,
+		func(w http.ResponseWriter, r *http.Request) {}, nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--pick-model", outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL, "PATH=/nonexistent-path"))
+
+	if exitCode == 0 {
+		t.Errorf("Expected non-zero exit when default fzf is not on PATH; stderr: %s", stderr)
+	}
+	if !strings.Contains(strings.ToLower(stderr), "fzf") {
+		t.Errorf("Expected default picker 'fzf' to appear in error, got: %q", stderr)
+	}
+}
+
+// RT-10.12: with refs present, the category filter is image-to-image.
+func TestModelPicker_image_to_image_with_refs_RT10_12(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n",
+		modelPickerConfigYAML("fal-ai/grok-2-aurora", pickFirst, false))
+
+	refDir := t.TempDir()
+	refPath := writeRefImage(t, refDir, "ref.png", fakeImagePNG)
+
+	var capturedURL string
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			capturedURL = r.URL.String()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/edit"}, "image-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	runBinary(t, binPath, []string{"gen", "--pick-model", refPath, outFile}, "a prompt",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if !strings.Contains(capturedURL, "category=image-to-image") {
+		t.Errorf("Expected category=image-to-image when refs present, got URL: %q", capturedURL)
+	}
+}

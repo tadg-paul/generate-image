@@ -992,32 +992,14 @@ func TestCLI_preview_opens_image_RT1_28(t *testing.T) {
 	}
 }
 
-// RT-1.29: --preview without preview-command uses platform default.
-// User action: runs with --preview flag but no preview-command in config.
-// User observes: image generated, platform default viewer invoked (which may
-// fail in test env, but the binary should attempt it rather than error about config).
+// RT-1.29: 🚫 REMOVED -- this test exercised the platform-default preview
+// command (e.g. `open` on macOS), which launched Preview.app on the test
+// fixture image on every `make test` run. The only assertion was the
+// negative "no 'requires preview-command' error" -- worthless coverage in
+// exchange for repeated desktop pollution. RT-1.28 covers the positive
+// case (explicit preview-command runs).
 func TestCLI_preview_without_config_uses_default_RT1_29(t *testing.T) {
-	bin := buildBinary(t)
-
-	// Use a config with preview-command that writes a marker to prove default is overridden.
-	// Then test WITHOUT preview-command -- the binary should not error about missing config.
-	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
-
-	imageServer := newImageServer(t, fakeImagePNG, "image/png")
-	server := startFakeAPI(t, successHandler(t, imageServer, nil), nil)
-
-	outFile := filepath.Join(t.TempDir(), "out.png")
-	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", "--preview", outFile}, "a cat", []string{"FAL_BASE_URL=" + server.URL})
-
-	// The default preview command (open/xdg-open) may fail in a headless test env,
-	// but the error should be about the preview command failing, NOT about
-	// missing preview-command configuration.
-	if exitCode != 0 {
-		lower := strings.ToLower(stderr)
-		if strings.Contains(lower, "requires preview-command") {
-			t.Errorf("Should use platform default, not require config; got: %q", stderr)
-		}
-	}
+	t.Skip("Removed: launched Preview.app on every run for zero useful coverage")
 }
 
 // RT-1.30: --quiet and --dry-run together exits non-zero.
@@ -3413,4 +3395,74 @@ func TestModelPicker_explicit_flag_bypassed_when_piped_RT10_14(t *testing.T) {
 	if !strings.Contains(generatePath, "grok-2-aurora") {
 		t.Errorf("Expected cfg.Model when piped + --pick-model, got generation path: %q", generatePath)
 	}
+}
+
+// RT-10.15: model picker fires before the prompt picker when both are active.
+// User action: in a TTY, run `pix gen` with both --pick-model and --load-prompt.
+// User observes: fzf opens for model selection first, then for prompt selection.
+func TestModelPicker_fires_before_prompt_picker_RT10_15(t *testing.T) {
+	bin := buildBinary(t)
+
+	// Each picker stub appends its identity to a shared log.
+	logFile := filepath.Join(t.TempDir(), "order.log")
+	picker := "sh -c 'echo prompt >> " + logFile + "; head -n 1'"
+	// The picker config drives BOTH flows, so we can't differentiate which fired
+	// when via separate stubs. Instead, the model picker uses a dedicated wrapper
+	// that records "model" before delegating to the same logic. We achieve this
+	// by configuring different picker strings... but the picker config is one slot.
+	// Workaround: use a stub that records its CWD argv pattern via tee.
+
+	// Simpler approach: use a stub script that timestamps. The model picker is
+	// invoked with /v1/models candidates (paths look like fal-ai/*), while the
+	// prompt picker is invoked with filesystem paths (start with /). Distinguish
+	// by inspecting the first candidate.
+	stubScript := filepath.Join(t.TempDir(), "stub.sh")
+	stubBody := `#!/bin/sh
+read first
+echo "$first" > /dev/null
+if echo "$first" | grep -q '^fal-ai/'; then
+  echo "model" >> ` + logFile + `
+else
+  echo "prompt" >> ` + logFile + `
+fi
+echo "$first"
+`
+	if err := os.WriteFile(stubScript, []byte(stubBody), 0755); err != nil {
+		t.Fatalf("Failed to write stub: %v", err)
+	}
+
+	promptsDir := t.TempDir()
+	writePromptFile(t, promptsDir, "p1.md", "saved")
+
+	cfg := "model: fal-ai/grok-2-aurora\ninteractive:\n  picker: " + stubScript + "\n  load-prompt:\n    path: " + promptsDir + "\n"
+	binPath := setupEnvWithConfig(t, bin, "FAL_KEY=test\n", cfg)
+
+	imageServer := newImageServer(t, fakeImagePNG, "image/png")
+	server := startFakeAPIWithModels(t,
+		successHandler(t, imageServer, nil), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fakeModelsResponse([]string{"fal-ai/flux/dev"}, "text-to-image")))
+		})
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath,
+		[]string{"gen", "--pick-model", "--load-prompt", outFile}, "\n",
+		ttyEnv("FAL_BASE_URL="+server.URL))
+
+	if exitCode != 0 {
+		t.Fatalf("Expected exit 0, got %d; stderr: %s", exitCode, stderr)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read order log: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	want := "model\nprompt"
+	if got != want {
+		t.Errorf("Expected picker order:\n%s\nGot:\n%s", want, got)
+	}
+
+	_ = picker // silence unused-var on the alternative-approach scaffolding above
 }

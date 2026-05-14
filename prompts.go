@@ -55,7 +55,10 @@ func runLoadPromptFlow(cfg *config, globalQuiet bool) (*loadPromptResult, error)
 		return nil, fmt.Errorf("load-prompt directory %s contains no prompt files (empty)", lp.Path)
 	}
 
-	selected, cancelled, err := invokePicker(picker, files)
+	selected, cancelled, err := invokePicker(picker, files,
+		`--header=Select a saved prompt`,
+		`--preview=cat {}`,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -112,11 +115,25 @@ func listPromptFiles(dir string) ([]string, error) {
 	return files, nil
 }
 
-func invokePicker(pickerCmd string, candidates []string) (string, bool, error) {
+// invokePicker runs the configured picker with the given candidates on stdin.
+// If extraFzfOpts is non-empty and the picker's first token is "fzf", those
+// options are prepended to the FZF_DEFAULT_OPTS env var for that invocation,
+// so user-set FZF_DEFAULT_OPTS still win (fzf takes the last duplicate).
+func invokePicker(pickerCmd string, candidates []string, extraFzfOpts ...string) (string, bool, error) {
 	cmd := exec.Command("sh", "-c", pickerCmd)
 	cmd.Stderr = os.Stderr
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+
+	if len(extraFzfOpts) > 0 && pickerFirstToken(pickerCmd) == "fzf" {
+		joined := strings.Join(extraFzfOpts, " ")
+		userOpts := os.Getenv("FZF_DEFAULT_OPTS")
+		combined := joined
+		if userOpts != "" {
+			combined = joined + " " + userOpts
+		}
+		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS="+combined)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -166,6 +183,16 @@ func expandTilde(p string) (string, error) {
 		return "", fmt.Errorf("expanding ~/: %w", err)
 	}
 	return filepath.Join(home, p[2:]), nil
+}
+
+// pickerFirstToken returns the first whitespace-separated token of the picker
+// command, used to decide whether fzf-specific options apply.
+func pickerFirstToken(pickerCmd string) string {
+	fields := strings.Fields(pickerCmd)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func isStdinTTY() bool {

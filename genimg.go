@@ -118,6 +118,31 @@ func runGenImg(args []string, globalQuiet bool, subcommandName string) int {
 		return 1
 	}
 
+	falKey, err := resolveFALKey(cfg, confDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	baseURL := falBaseURL()
+
+	// Model picker runs before prompt resolution. Rationale: the model the
+	// user picks frames the kind of prompt they will want next, so the
+	// natural mental order is "pick the tool, then choose what to feed it".
+	usePickModel := !noPickModelFlag && (pickModelFlag || cfg.Interactive.ModelPicker.Always)
+	pickedEndpoint := ""
+	if usePickModel && isStdinTTY() {
+		ep, cancelled, err := runModelPickerFlow(cfg, falKey, len(refs) > 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		if cancelled {
+			return 0
+		}
+		pickedEndpoint = ep
+	}
+
 	useLoadPrompt := !noLoadPromptFlag && (loadPromptFlag || cfg.Interactive.LoadPrompt.Always)
 
 	var prompt string
@@ -133,8 +158,7 @@ func runGenImg(args []string, globalQuiet bool, subcommandName string) int {
 		prompt = result.Prompt
 	} else {
 		// Either load-prompt is inactive, or it is active but stdin is piped.
-		// Piped stdin with content overrides the load-prompt flow -- the user's
-		// piped content is taken as the prompt directly.
+		// Piped stdin with content overrides the load-prompt flow.
 		prompt, err = readPrompt()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
@@ -144,34 +168,6 @@ func runGenImg(args []string, globalQuiet bool, subcommandName string) int {
 			fmt.Fprintln(os.Stderr, "Error: no prompt provided on stdin")
 			return 1
 		}
-	}
-
-	falKey, err := resolveFALKey(cfg, confDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	baseURL := falBaseURL()
-
-	// Resolve which model endpoint to call. By default, use cfg.Model with
-	// the existing /edit suffix when refs are present. If --pick-model (or
-	// model-picker.always) is active, prompt the user to select from FAL's
-	// /v1/models catalogue and use the selected endpoint_id as-is.
-	usePickModel := !noPickModelFlag && (pickModelFlag || cfg.Interactive.ModelPicker.Always)
-	pickedEndpoint := ""
-	if usePickModel && isStdinTTY() {
-		// Picker only runs in an interactive terminal. Piped/redirected stdin
-		// silently bypasses the picker; cfg.Model is used.
-		ep, cancelled, err := runModelPickerFlow(cfg, falKey, len(refs) > 0)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			return 1
-		}
-		if cancelled {
-			return 0
-		}
-		pickedEndpoint = ep
 	}
 
 	// Build endpoint and payload depending on whether refs are present.

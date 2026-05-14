@@ -72,7 +72,10 @@ func runModelPickerFlow(cfg *config, falKey string, hasRefs bool) (string, bool,
 		candidates = append(candidates, line)
 	}
 
-	selected, cancelled, err := invokePicker(picker, candidates)
+	headerText := "Select a FAL model (" + category + ")"
+	selected, cancelled, err := invokePicker(picker, candidates,
+		"--header="+headerText,
+	)
 	if err != nil {
 		return "", false, err
 	}

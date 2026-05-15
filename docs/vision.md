@@ -1,4 +1,4 @@
-<!-- Version: 0.6 | Last updated: 2026-05-12 -->
+<!-- Version: 0.7 | Last updated: 2026-05-13 -->
 
 # Vision
 
@@ -23,6 +23,8 @@ pix cost
 - **Zero friction:** `make install` places the binary on `PATH`; a YAML config file is the only setup.
 - **Pipeline-friendly:** reads stdin, writes files, reports status to stderr. No interactive prompts by default.
 - **Reusable prompts:** an opt-in `--load-prompt` flow lets users keep a directory of saved prompts and pick one interactively via fzf (or any configured picker), optionally appending text on the fly.
+- **Model discovery:** an opt-in `--pick-model` flow fetches FAL's `/v1/models` catalogue and lets the user pick the model for an invocation interactively. A `model-picker.preselect` config knob keeps a habitual default at the top of the picker.
+- **Interactive when interactive, scriptable when scripted:** every picker and prompt only fires when stdin is a TTY. Piped or redirected invocations silently bypass them, so scripts stay scripts.
 - **Cost-aware:** reports generation cost when the FAL pricing API has data; standalone cost lookup via `pix cost`.
 
 ## Non-goals (for now)
@@ -46,18 +48,20 @@ Queries pricing for the configured model without generating an image. Reports bo
 
 ## Flag system
 
-**Global flags** (placed before the subcommand): `--quiet` / `-q`, `--version`, `--help` / `-h` (top-level).
+Recognized flags may appear in any position (before, after, or interleaved with positional arguments). The subcommand is the first non-flag token.
 
-**Subcommand flags** (placed after the subcommand): `--dry-run`, `--preview` / `-p` (`generate` only), `--help` / `-h` (subcommand-specific).
+- **Global flags:** `--quiet` / `-q`, `--version`, `--help` / `-h`.
+- **Subcommand flags** (on `generate`): `--dry-run`, `--preview` / `-p`, `--load-prompt` / `--no-load-prompt`, `--pick-model` / `--no-pick-model`, `--help` / `-h`.
+- **Subcommand flags** (on `cost`): `--dry-run`, `--help` / `-h`.
 
-`--help` is mutually exclusive with all other flags and arguments.
+`--help` is mutually exclusive with all other flags and arguments. The position of `--help` selects which help text renders: `pix --help` shows the top level, `pix <subcommand> --help` shows that subcommand's specific help.
 
 ## Configuration
 
 ### `config.yaml`
 
 ```yaml
-model: xai/grok-imagine-image
+model: xai/grok-imagine-image     # default model when --pick-model isn't in play
 
 api-keys:
   fal:
@@ -65,6 +69,19 @@ api-keys:
     # file: /path/to/fal.key
 
 preview-command: chafa
+
+# Interactive-only -- only applies when stdin is a TTY. Piped/scripted runs bypass.
+interactive:
+  picker: fzf                       # shared picker for both flows (default: fzf)
+  prompt-picker:
+    always: false                   # if true, --load-prompt is implicit on every gen
+    filter: ""                      # if set, fzf opens with this query pre-filled
+  load-prompt:
+    path: ~/snips/prompts-genai     # directory of saved prompt files
+  model-picker:
+    always: false                   # if true, --pick-model is implicit on every gen
+    filter: ""                      # if set, fzf opens with this query pre-filled
+    preselect: ""                   # endpoint_id to surface as the first candidate
 ```
 
 The config file lives at `~/.config/pix/config.yaml`, with fallback to the binary directory for development.

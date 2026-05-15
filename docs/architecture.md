@@ -1,4 +1,4 @@
-<!-- Version: 0.5 | Last updated: 2026-05-12 -->
+<!-- Version: 0.6 | Last updated: 2026-05-13 -->
 
 # Architecture
 
@@ -47,21 +47,31 @@ Each subcommand parses its own flags, including a subcommand-specific `--help` /
 
 ### Flag system
 
-Two categories enforced strictly:
+`main.go` performs a single-pass classification of `os.Args[1:]`:
 
-- **Global flags** (must be placed before the subcommand): `--quiet` / `-q`, `--version`, top-level `--help` / `-h`
-- **Subcommand flags** (must be placed after the subcommand): `--dry-run`, `--preview` / `-p` (`generate` only), `--load-prompt` / `--no-load-prompt` (`generate` only), subcommand-specific `--help` / `-h`
+- Recognized global flags (`-q`/`--quiet`, `--version`) are consumed regardless of position.
+- `-h`/`--help` is top-level when seen before any non-flag token, subcommand-level otherwise.
+- The first non-flag token is the subcommand; remaining flags and positionals pass through to the subcommand handler.
 
-Misplaced flags exit non-zero with a clear error. `--help` is mutually exclusive with all other flags and arguments.
+To the user, flag position is irrelevant -- `pix --no-load-prompt gen out.png`, `pix gen --no-load-prompt out.png`, and `pix gen out.png --no-load-prompt` are equivalent. `--help` remains mutually exclusive with every other flag/positional. See issue #11 for design history.
 
 ### Configuration
 
 Two files in the config directory (`~/.config/pix/` or next to the binary):
 
-- **`config.yaml`** -- model, API key sources, preview command
+- **`config.yaml`** -- model, API key sources, preview command, interactive-picker settings
 - **`.env`** -- fallback API key storage (optional, legacy)
 
 The config directory is resolved at runtime by checking for `config.yaml` or `.env` next to the binary first, then falling back to the XDG location. This allows development (config next to binary) and installed (XDG) use without any flag or env var.
+
+`config.yaml` has four top-level keys plus an optional `interactive:` block:
+
+- `model:` -- default FAL endpoint_id
+- `api-keys.<provider>.{command, file}` -- API key resolution (sh -c command or filesystem path; both tilde-expanded)
+- `preview-command:` -- command for `-p`/`--preview` (sh -c)
+- `interactive:` -- TTY-only behaviour (picker, prompt-picker, load-prompt, model-picker). Piped/scripted invocations silently bypass everything under this block.
+
+The `interactive:` block separates picker behaviour (`prompt-picker.{always, filter}`, `model-picker.{always, filter, preselect}`) from data sources (`load-prompt.path`). `interactive.picker` is the single source of truth for the picker command shared by both flows. See issue #12.
 
 ### API integration
 
@@ -86,7 +96,8 @@ The regression test suite runs the compiled binary as a subprocess via `os/exec`
 |----------|-----------|
 | Subcommand structure (vs single-purpose binaries) | Discoverable surface, single config, single install. Future operations land cleanly. |
 | Multi-file package main (vs monolithic main.go) | Each subcommand and concern in its own file -- navigability without architectural overhead. |
-| Strict flag positioning | Removes ambiguity. Misplaced flags fail loudly; users learn the rule once. |
+| Position-irrelevant flag parsing (since #11) | The original strict-position rule was friction in practice; even the author got tripped up. Single-pass scan classifies by name, treats first non-flag as subcommand. |
+| `interactive:` block (since #12) | TTY-only settings live under one parent so the schema teaches the rule. Piped/scripted invocations silently bypass everything in the block. Picker behaviour separates from data sources (prompt-picker vs load-prompt). |
 | Go, not Python | Single static binary. No venv, no pip, no runtime. Trivial cross-compilation. |
 | No FAL SDK | The FAL API is a handful of HTTP calls. A dependency is not justified. |
 | `sh -c` for user commands | Config commands (key retrieval, preview) are user-specified shell expressions. |
@@ -100,7 +111,10 @@ Future enhancements, in rough priority order:
 |---------|-------------|------------|
 | Reference image / edit mode | Reference image support added to `pix generate` via positional args. Uses FAL's `/edit` endpoint with `image_urls` parameter. Implemented in #4. | Done |
 | Editor invocation for prompts | Allow `$VISUAL`/`$EDITOR` to open the selected saved prompt for free-form editing instead of single-line append. Deferred from [#8](https://github.com/tadg-paul/pix/issues/8). | Medium |
-| `--model` flag | Override `config.yaml` model per invocation. Enables comparing models. | Small |
+| Model picker (`--pick-model`) | Fetches FAL `/v1/models` for the active category and presents the catalogue via the configured picker. `model-picker.preselect` surfaces a habitual default. Implemented in #10 and #12. | Done |
+| `--model` flag | Override `config.yaml` model per invocation without the picker. Enables side-by-side comparisons in scripts. | Small |
+| Pricing in model picker | Lazy-fetch pricing for the selected model after the picker exits and before the FAL call. Currently pricing is fetched per-invocation only after generation. | Medium |
+| Local cache for `/v1/models` | Cache the model catalogue to `~/.cache/pix/models.json` with a TTL so the picker doesn't fetch on every invocation. | Small |
 | Image dimensions | Support `--aspect-ratio` or `--size` presets. FAL API accepts `aspect_ratio` ("1:1", "16:9") and `resolution` ("1k", "2k"). | Small |
 | Homebrew formula | Cross-compiled binaries for Darwin/Linux/Windows. `make release` with GitHub releases. See [#3](https://github.com/tadg-paul/pix/issues/3). | Medium |
 | Batch mode | Accept multiple prompts (one per line), generate in parallel. | Medium |

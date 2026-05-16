@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+// formatFALErrorBody is defined in fal_errors.go.
+
 type falResponse struct {
 	Images []struct {
 		URL string `json:"url"`
@@ -80,7 +82,7 @@ func generateImageWithPayload(client *http.Client, baseURL, endpoint string, pay
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("FAL API error (HTTP %d): %s", resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("FAL API error (HTTP %d): %s", resp.StatusCode, formatFALErrorBody(body))
 	}
 
 	var falResp falResponse

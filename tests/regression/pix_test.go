@@ -4459,3 +4459,332 @@ func TestPickers_model_filter_empty_result_errors_RT15_8(t *testing.T) {
 		t.Errorf("expected 'no models match' in stderr, got: %q", stderr)
 	}
 }
+
+// --- FAL error response parsing (issue #17) ---
+
+// RT-17.1: FAL standard error envelope -> error.message in pix stderr.
+func TestFAL_error_envelope_message_surfaces_RT17_1(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"type":"validation_error","message":"prompt too long"}}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit on FAL error, got 0")
+	}
+	if !strings.Contains(stderr, "prompt too long") {
+		t.Errorf("expected envelope message 'prompt too long' in stderr, got: %q", stderr)
+	}
+}
+
+// RT-17.2: 401 with envelope -> message surfaced.
+func TestFAL_error_envelope_401_RT17_2(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"type":"authorization_error","message":"invalid api key"}}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit on 401, got 0")
+	}
+	if !strings.Contains(stderr, "invalid api key") {
+		t.Errorf("expected '%s' in stderr, got: %q", "invalid api key", stderr)
+	}
+}
+
+// RT-17.3: error.type appears in error output.
+func TestFAL_error_envelope_includes_type_RT17_3(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"type":"validation_error","message":"something wrong"}}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, _ := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if !strings.Contains(stderr, "validation_error") {
+		t.Errorf("expected error.type 'validation_error' in stderr, got: %q", stderr)
+	}
+}
+
+// RT-17.4: request_id appears when present.
+func TestFAL_error_envelope_includes_request_id_RT17_4(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"type":"validation_error","message":"x","request_id":"req-abc"}}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, _ := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if !strings.Contains(stderr, "req-abc") {
+		t.Errorf("expected request_id 'req-abc' in stderr, got: %q", stderr)
+	}
+}
+
+// RT-17.5: long non-envelope body is truncated to 500 bytes with a marker.
+func TestFAL_error_long_body_truncated_RT17_5(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	// 10 KB HTML body. The string "MARKER-PAST-500" sits at offset >500 and
+	// must NOT appear in pix's error output.
+	hugePrefix := strings.Repeat("a", 600)
+	body := "<html><body>" + hugePrefix + "MARKER-PAST-500</body></html>"
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(body))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	if strings.Contains(stderr, "MARKER-PAST-500") {
+		t.Errorf("expected truncation to hide content past 500 bytes, but found marker; stderr length: %d", len(stderr))
+	}
+	if !strings.Contains(stderr, "truncated") {
+		t.Errorf("expected truncation indicator in stderr, got: %q", stderr)
+	}
+}
+
+// RT-17.6: short non-envelope body is shown in full, no truncation indicator.
+func TestFAL_error_short_body_no_truncation_RT17_6(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("upstream rejected the request"))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, _ := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if !strings.Contains(stderr, "upstream rejected the request") {
+		t.Errorf("expected short body to appear in full, got: %q", stderr)
+	}
+	if strings.Contains(stderr, "truncated") {
+		t.Errorf("expected NO truncation indicator for body under 500 bytes, got: %q", stderr)
+	}
+}
+
+// RT-17.7: when FAL echoes the request body back, base64 image payloads do not appear in stderr.
+func TestFAL_error_no_base64_leak_RT17_7(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	refDir := t.TempDir()
+	refPath := writeRefImage(t, refDir, "ref.png", fakeImagePNG)
+
+	// Server echoes the request body back inside an error envelope wrapper.
+	// Either branch (envelope parse or truncation) MUST hide the base64 payload.
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ := io.ReadAll(r.Body)
+		// Build a "real" FAL error envelope where the message is short
+		// but the body of the request was echoed alongside via additional
+		// fields. The envelope path should strictly use error.message.
+		wrapper := map[string]interface{}{
+			"error": map[string]interface{}{
+				"type":    "validation_error",
+				"message": "rejected (rest of body omitted)",
+			},
+			"echoed_request": string(reqBody),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(wrapper)
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", refPath, outFile}, "edit prompt",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	if strings.Contains(stderr, "data:image/png;base64,") {
+		t.Errorf("base64 data URI leaked to stderr")
+	}
+	// The PNG magic bytes 'iVBOR' (base64 of 0x89,0x50,0x4e,0x47) commonly appear
+	// in echoed base64 payloads.
+	if strings.Contains(stderr, "iVBOR") {
+		t.Errorf("PNG base64 magic leaked to stderr")
+	}
+	if !strings.Contains(stderr, "rejected (rest of body omitted)") {
+		t.Errorf("expected envelope message in stderr, got: %q", stderr)
+	}
+}
+
+// --- Multi-envelope FAL error parsing (discovery #18) ---
+
+// RT-18.1: FastAPI `detail` envelope (list of validation errors) is parsed and
+// presented as "<msg>: <loc>". Kontext-family models return this shape.
+func TestFAL_error_fastapi_detail_list_RT18_1(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"detail":[{"type":"missing","loc":["body","image_url"],"msg":"Field required"}]}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	// User must see what was missing AND where.
+	if !strings.Contains(stderr, "Field required") {
+		t.Errorf("expected 'Field required' in stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "body.image_url") {
+		t.Errorf("expected loc path 'body.image_url' in stderr, got: %q", stderr)
+	}
+	// Echoed request must NOT appear (the body in real FAL responses contains
+	// the base64 ref image under detail[].input).
+	if strings.Contains(stderr, "iVBOR") || strings.Contains(stderr, "data:image") {
+		t.Errorf("request echo leaked to stderr: %q", stderr)
+	}
+}
+
+// RT-18.2: FastAPI `detail` envelope (plain string) is parsed.
+func TestFAL_error_fastapi_detail_string_RT18_2(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"detail":"Forbidden"}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	if !strings.Contains(stderr, "Forbidden") {
+		t.Errorf("expected 'Forbidden' in stderr, got: %q", stderr)
+	}
+}
+
+// RT-18.3: top-level `message` field (rare but documented) is parsed.
+func TestFAL_error_top_level_message_RT18_3(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message":"upstream timeout"}`))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, _ := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if !strings.Contains(stderr, "upstream timeout") {
+		t.Errorf("expected 'upstream timeout' in stderr, got: %q", stderr)
+	}
+}
+
+// RT-18.4: FastAPI detail list with `input` field containing a base64 image:
+// the input echo must NOT leak; only msg + loc surface.
+func TestFAL_error_fastapi_detail_with_echoed_input_RT18_4(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	// Simulates the real kontext error: detail[].input echoes back the full
+	// request, including base64 ref images. pix must surface msg/loc and
+	// suppress everything else.
+	hugeBase64 := strings.Repeat("iVBORw0KGgoAAAANSUhEUgAA", 200)
+	errorBody := `{"detail":[{"type":"missing","loc":["body","image_url"],"msg":"Field required","input":{"image_urls":["data:image/png;base64,` + hugeBase64 + `"]}}]}`
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(errorBody))
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	if !strings.Contains(stderr, "Field required") {
+		t.Errorf("expected 'Field required' in stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "body.image_url") {
+		t.Errorf("expected 'body.image_url' loc in stderr, got: %q", stderr)
+	}
+	// The whole point of this fix.
+	if strings.Contains(stderr, "iVBORw0KGgoAAAANSUhEUgAA") {
+		t.Errorf("base64 input echo leaked to stderr")
+	}
+	if strings.Contains(stderr, "data:image/png;base64,") {
+		t.Errorf("data URI leaked to stderr")
+	}
+}
+
+// RT-18.5: empty response body produces a sensible placeholder, not a panic.
+func TestFAL_error_empty_body_RT18_5(t *testing.T) {
+	bin := buildBinary(t)
+	binPath := setupEnv(t, bin, "test-key", "model: fal-ai/grok-2-aurora\n")
+
+	server := startFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}, nil)
+
+	outFile := filepath.Join(t.TempDir(), "out.png")
+	_, stderr, exitCode := runBinary(t, binPath, []string{"gen", outFile}, "a cat",
+		[]string{"FAL_BASE_URL=" + server.URL})
+
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	lower := strings.ToLower(stderr)
+	if !strings.Contains(lower, "empty") && !strings.Contains(lower, "no") {
+		t.Errorf("expected empty-body indicator in stderr, got: %q", stderr)
+	}
+}
